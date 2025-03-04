@@ -1,6 +1,7 @@
 import httpx
 import json
 import subprocess
+import config
 
 
 class Models():
@@ -34,8 +35,7 @@ class Models():
             for chunk in response.iter_lines():
                 if chunk:
                     yield f"{chunk}\n\n"
-        
-        
+
     def ollama(self):
         data = {
             "model": "llama3.2",
@@ -160,5 +160,23 @@ class Models():
         }
         return f"data: {json.dumps(data_dict)}\n\n"
 
-
+    def qwen(self):
+        headers = {
+            "Authorization": f"Bearer {config.QWEN_API_KEY}",
+            "Content-Type": "application/json",
+        }
+        data = {
+            "model": "qwen-plus",
+            "messages": self.messages, 
+            "stream": True
+        }
+        with httpx.stream(
+            "POST",
+            "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+            headers=headers,
+            json=data,
+        ) as response:
+            for chunk in response.iter_lines():
+                if chunk:
+                    yield f"{chunk}\n\n"
 

@@ -49,6 +49,12 @@ def stream():
             payload["messages"][-1]["content"] = last_message["content"].replace("ollama:", "", 1).strip()
             logger.info(f"ollama: {payload['messages'][-1]['content']}")
             return models.ollama(), {"Content-Type": "text/event-stream"}
+        
+        if last_message.get("role") == "user" and last_message.get("content", "").strip().startswith("qwen:"):
+            # Remove the "qwen: " prefix from the message
+            payload["messages"][-1]["content"] = last_message["content"].replace("qwen:", "", 1).strip()
+            logger.info(f"qwen: {payload['messages'][-1]['content']}")
+            return models.qwen(), {"Content-Type": "text/event-stream"}
 
         logger.info(f"copilot: {payload['messages'][-1]['content']}")
         return models.copilot(), {"Content-Type": "text/event-stream"}
