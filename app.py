@@ -1,89 +1,54 @@
-from pprint import pprint
-from typing import Annotated, TypedDict
+from flask import Flask, jsonify, request
+from asgiref.wsgi import WsgiToAsgi
+from models import Models
+import json
+import sys, os
 
-import httpx
-from fastapi import FastAPI, Header, Request
-from fastapi.responses import StreamingResponse
-
-
-class Message(TypedDict):
-    role: str
-    content: str
+parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if parent_dir not in sys.path:
+    sys.path.append(parent_dir)
 
 
-class RequestJson(TypedDict):
-    stream: bool
-    messages: list[Message]
+import utils.github_utils as github_utils
+from utils.log_utils import *
 
 
-app = FastAPI()
-client = httpx.AsyncClient()
+logger = configure_logger(with_date_folder=False)
+logger.info('-----------------Starting-----------------')
 
 
-@app.get("/")
-def hello() -> str:
-    return "Hello Copilot!"
+flask_app = Flask(__name__)
+app = WsgiToAsgi(flask_app)
 
+@flask_app.post("/")
+def stream():
+    github_handler = github_utils.GitHubHandler(request)
+    if not github_handler.verify_github_signature():
+        return jsonify({"error": "Request must be from GitHub"}), 403
 
-@app.get("/callback")
-def callback() -> str:
-    return (
-        "You may close this tab and return to GitHub.com (where you should "
-        "refresh the page and start a fresh chat). If you're using VS Code or "
-        "Visual Studio, return there."
-    )
+    user_login = github_handler.get_user_login()
+    logger.info(f"User login: {user_login}")
 
+    x_github_token = request.headers["x-github-token"]
+    payload = request.get_json()
+    # logger.info(json.dumps(payload, indent=4, ensure_ascii=False))
 
-async def whoami(headers) -> str:
-    """Returns GitHub login handle."""
-    response = await client.get("https://api.github.com/user", headers=headers)
-    json_ = response.json()
-    return json_["login"]
+    models = Models(x_github_token, payload)
+    
+    # Check if the last message indicates a command execution request
+    if payload.get("messages") and len(payload["messages"]) > 0:
+        last_message = payload["messages"][-1]
+        if last_message.get("role") == "user" and last_message.get("content", "").strip().startswith("cmd:"):
+            # Remove the "cmd: " prefix from the message
+            payload["messages"][-1]["content"] = last_message["content"].replace("cmd:", "", 1).strip()
+            logger.info(f"cmd: {payload['messages'][-1]['content']}")
+            return models.execute_command(), {"Content-Type": "text/event-stream"}
 
+        if last_message.get("role") == "user" and last_message.get("content", "").strip().startswith("ollama:"):
+            # Remove the "ollama: " prefix from the message
+            payload["messages"][-1]["content"] = last_message["content"].replace("ollama:", "", 1).strip()
+            logger.info(f"ollama: {payload['messages'][-1]['content']}")
+            return models.ollama(), {"Content-Type": "text/event-stream"}
 
-def prepend_system_prompts(messages, login_handle: str) -> None:
-    messages.insert(
-        0,
-        {
-            "role": "system",
-            "content": f"Start every response with the user's name, which is @{login_handle}",
-        },
-    )
-    messages.insert(
-        0,
-        {
-            "role": "system",
-            "content": "You are a helpful assistant that replies to user messages as if you were the Blackbeard Pirate.",
-        },
-    )
-
-
-@app.post("/")
-async def stream(
-    request: Request, x_github_token: Annotated[str | None, Header()] = None
-):
-    payload = await request.json()
-    pprint(payload, sort_dicts=False)
-
-    headers = {
-        "Authorization": f"Bearer {x_github_token}",
-        "Content-Type": "application/json",
-    }
-    login_handle = await whoami(headers)
-
-    messages: list[Message] = payload["messages"]
-    prepend_system_prompts(messages, login_handle)
-    data: RequestJson = {"messages": messages, "stream": True}
-
-    def pass_generator():
-        with httpx.stream(
-            "POST",
-            "https://api.githubcopilot.com/chat/completions",
-            headers=headers,
-            json=data,
-        ) as response:
-            for chunk in response.iter_lines():
-                if chunk:
-                    yield f"{chunk}\n\n"
-
-    return StreamingResponse(pass_generator(), media_type="text/event-stream")
+        logger.info(f"copilot: {payload['messages'][-1]['content']}")
+        return models.copilot(), {"Content-Type": "text/event-stream"}
